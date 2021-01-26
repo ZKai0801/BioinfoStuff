@@ -6,15 +6,18 @@
 #        Trimming (fastp) +                                                             #
 #        Alignment (Sentieon-bwa) +                                                     #
 #        Deduplication (optional) +                                                     #
-#        Quality Control                                                                #
+#        Quality Control +                                                              #
+#        Calculate coverage (PureCN) +                                                  #
+#        Build PoN (PureCN)                                                             #
 #                                                                                       #
 #   2) run PureCN tumor-only pipeline                                                   #
-# 
+#                                                                                       #
 #   Remove low-quality variants +                                                       #
 #   VEP annotation +                                                                    #
 # ------------------------------------------------------------------------------------- #
 # Usage:                                                                                #
-#   [admin@kai]$ bash snv_calling.sh [input_folder] [output_folder] [BED]               #
+#   [admin@kai]$ bash pureCN_pipeline.sh [mode] [input_folder] [output_folder] [bed] \  #
+#                [normal_ref]                                                           #
 #                                                                                       #
 # ------------------------------------------------------------------------------------- #
 
@@ -32,6 +35,7 @@ bamdst="/public/software/bamdst/bamdst"
 bgzip="/public/software/htslib-1.9/bin/bgzip"
 tabix="/public/software/htslib-1.9/bin/tabix"
 vep="/public/software/98vep/ensembl-vep/vep"
+Rscript="/public/software/R_3.5.1/bin/Rscript"
 
 merge_mnv="/public/home/kai/BioinfoStuff/tertiary_analysis/merge_mnv.py"
 HRDecipher="/public/home/kai/softwares/HRDecipher/HRDecipher.py"
@@ -132,7 +136,7 @@ if [[ ! -d $purecn_dir ]]; then
     mkdir $purecn_dir
 fi
 
-hrd_dir=$output_folder/hrd/;
+hrd_dir=$output_folder/HRD/;
 if [[  ! -d $hrd_dir  ]]; then
     mkdir $hrd_dir
 fi
@@ -294,7 +298,7 @@ then
     # step2 -- generate interval file
     echo "LOGGING: `date --rfc-3339=seconds` -- generate interval file"
 
-    Rscript $PURECN/IntervalFile.R --infile $bed \
+    $Rscript $PURECN/IntervalFile.R --infile $bed \
     --fasta $ref --outfile $purecn_dir/intervals.txt \
     --offtarget --genome hg19 \
     --export $purecn_dir/baits_optimized.bed;
@@ -310,7 +314,7 @@ then
         mkdir $cov_dir
     fi
 
-    Rscript $PURECN/Coverage.R --bam $purecn_dir/normal_bams.list \
+    $Rscript $PURECN/Coverage.R --bam $purecn_dir/normal_bams.list \
     --intervals $purecn_dir/intervals.txt \
     --cpu $thread \
     --outdir $cov_dir;
@@ -325,7 +329,7 @@ then
         mkdir $ref_dir
     fi
 
-    Rscript $PURECN/NormalDB.R --outdir $ref_dir \
+    $Rscript $PURECN/NormalDB.R --outdir $ref_dir \
     --coveragefiles $purecn_dir/normal_loess.list \
     --genome hg19 -f;
 
@@ -511,19 +515,19 @@ then
         $snv_dir/${sampleID}.step7_MNV_merged.vcf.gz \
         -o $snv_dir/${sampleID}.step8_final.vcf;
 
-        step6 - run pureCN
+        # step6 - run pureCN
         echo "LOGGING: ${sampleID} -- `date --rfc-3339=seconds` -- calculate coverage";
         
         if [[ ! -d $purecn_dir/${sampleID} ]]; then
             mkdir $purecn_dir/${sampleID};
         fi;
 
-        Rscript $PURECN/Coverage.R --outdir $purecn_dir/$sampleID \
+        $Rscript $PURECN/Coverage.R --outdir $purecn_dir/$sampleID \
         --bam ${align_dir}/${sampleID}.sorted.dedup.bam \
         --intervals $normal_ref/intervals.txt;
 
         echo "LOGGING: ${sampleID} -- `date --rfc-3339=seconds` -- run PureCN";
-        Rscript $PURECN/PureCN.R --out $purecn_dir/$sampleID \
+        $Rscript $PURECN/PureCN.R --out $purecn_dir/$sampleID \
         --tumor $purecn_dir/${sampleID}/${sampleID}.sorted.dedup_coverage_loess.txt \
         --sampleid $sampleID \
         --vcf $snv_dir/${sampleID}.step8_final.vcf \
