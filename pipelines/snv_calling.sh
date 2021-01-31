@@ -433,7 +433,7 @@ if [[  $mode == 'matched' ]]; then
         > ${snv_dir}/${sampleID}.step3_on_target.vcf;
 
         # filter low-support variants
-        grep "#\|PASS" ${snv_dir}/${sampleID}.step3_on_target.vcf > \
+        awk '($1 ~ /^#/) || ($7 ~ /PASS/)' ${snv_dir}/${sampleID}.step3_on_target.vcf > \
         ${snv_dir}/${sampleID}.step4_filter.vcf
 
         $bcftools filter -i "(FORMAT/AF[:0]) >= 0.05" \
