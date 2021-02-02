@@ -31,14 +31,15 @@ samtools="/public/software/samtools-1.9/samtools"
 bamdst="/public/software/bamdst/bamdst"
 ichorCNA="/public/software/ichorCNA/"
 readCounter="/public/software/hmmcopy_utils/bin/readCounter"
+Rscript="/public/software/R_3.6.3/bin/Rscript"
 
 ref="/data/ngs/database/soft_database/GATK_Resource_Bundle/hg19/ucsc.hg19.fasta"
 
 # switch (on||off)
-do_trim="on"
-do_align="on"
-do_qc="on"
-do_readcount="on"
+do_trim=""
+do_align=""
+do_qc=""
+do_readcount=""
 do_icorcna="on"
 
 # ------------------------------ argparser ----------------------------- #
@@ -96,11 +97,6 @@ echo "========================================================"
 echo "LOGGING: -- settings -- input folder -- ${input_folder}"
 echo "LOGGING: -- settings -- output folder -- ${output_folder}"
 echo "========================================================"
-
-echo "sampleID,fastq_size,raw_reads,raw_bases,clean_reads,clean_bases,\
-qc30_rate,mapping_rate(%),mean_depth,average_insert_size,std_insert_size" \
-> $qc_dir/QC_summary.csv
-
 
 
 # ---------------------------------------------------------------------- #
@@ -165,8 +161,12 @@ do
     then
         echo "LOGGING: ${sampleID} -- `date --rfc-3339=seconds` -- qc";
 
-        # $samtools stats -@ ${thread} ${align_dir}/${sampleID}.normal.sorted.bam > ${qc_dir}/${sampleID}.normal.stats.txt;
-        # $samtools stats -@ ${thread} ${align_dir}/${sampleID}.tumor.sorted.bam > ${qc_dir}/${sampleID}.tumor.stats.txt;
+        echo "sampleID,fastq_size,raw_reads,raw_bases,clean_reads,clean_bases,\
+        qc30_rate,mapping_rate(%),mean_depth,average_insert_size,std_insert_size" \
+        > $qc_dir/QC_summary.csv
+
+        $samtools stats -@ ${thread} ${align_dir}/${sampleID}.normal.sorted.bam > ${qc_dir}/${sampleID}.normal.stats.txt;
+        $samtools stats -@ ${thread} ${align_dir}/${sampleID}.tumor.sorted.bam > ${qc_dir}/${sampleID}.tumor.stats.txt;
 
         tumor_r1=$(du $input_folder/${sampleID}_tumor_R1.fastq.gz -shL |awk '{print $1}');
         tumor_r2=$(du $input_folder/${sampleID}_tumor_R2.fastq.gz -shL |awk '{print $1}');
