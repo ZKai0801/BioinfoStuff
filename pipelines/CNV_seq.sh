@@ -93,6 +93,7 @@ fi
 # ---------------------------  LOGGING  -------------------------------- #
 # ---------------------------------------------------------------------- #
 echo "LOGGING: `date --rfc-3339=seconds` -- Analysis started"
+echo "LOGGING: This is the CNV_seq.sh pipeline"
 echo "========================================================"
 echo "LOGGING: -- settings -- input folder -- ${input_folder}"
 echo "LOGGING: -- settings -- output folder -- ${output_folder}"
