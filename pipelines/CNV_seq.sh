@@ -98,6 +98,12 @@ echo "LOGGING: -- settings -- input folder -- ${input_folder}"
 echo "LOGGING: -- settings -- output folder -- ${output_folder}"
 echo "========================================================"
 
+if [[  $do_qc == "on"  ]];
+then
+echo "sampleID,fastq_size,raw_reads,raw_bases,clean_reads,clean_bases,qc30_rate,\
+mapping_rate(%),mean_depth,average_insert_size,std_insert_size" \
+> $qc_dir/QC_summary.csv
+fi
 
 # ---------------------------------------------------------------------- #
 # ---------------------------  Pipeline  ------------------------------- #
@@ -160,10 +166,6 @@ do
     if [[  $do_qc == "on"  ]];
     then
         echo "LOGGING: ${sampleID} -- `date --rfc-3339=seconds` -- qc";
-
-        echo "sampleID,fastq_size,raw_reads,raw_bases,clean_reads,clean_bases,\
-        qc30_rate,mapping_rate(%),mean_depth,average_insert_size,std_insert_size" \
-        > $qc_dir/QC_summary.csv
 
         $samtools stats -@ ${thread} ${align_dir}/${sampleID}.normal.sorted.bam > ${qc_dir}/${sampleID}.normal.stats.txt;
         $samtools stats -@ ${thread} ${align_dir}/${sampleID}.tumor.sorted.bam > ${qc_dir}/${sampleID}.tumor.stats.txt;
