@@ -390,6 +390,8 @@ do
 
         bgzip $cnv_dir/${sampleID}.bin.seqz;
         tabix -f -s 1 -b 2 -e 2 -S 1 $cnv_dir/${sampleID}.bin.seqz.gz;
+
+        rm $cnv_dir/${sampleID}_chr*.gz;
     fi
 
     # step6 - process seqz data, normalization, segmentation and estimate cellularity and ploidy
@@ -418,7 +420,7 @@ do
         NR!=1 {OFS="\t"; print sample,$1,$2,$3,$10,$11,$12,ploidy}' \
         $cnv_dir/${sampleID}/${sampleID}_segments.txt > $hrd_dir/${sampleID}.pre_hrd.tsv;
 
-        python3 $HRDecipher $hrd_dir/${sampleID}.pre_hrd.tsv;
+        python3 $HRDecipher $hrd_dir/${sampleID}.pre_hrd.tsv $cnv_dir/${sampleID}.bin.seqz.gz;
     fi
 done
 
