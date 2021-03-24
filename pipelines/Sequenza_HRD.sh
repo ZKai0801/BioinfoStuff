@@ -123,6 +123,9 @@ echo "LOGGING: -- settings -- output folder -- ${output_folder}"
 echo "LOGGING: -- settings -- BED file -- ${bed}"
 echo "========================================================"
 
+
+if [[ $do_qc == "on"  ]];
+then
 echo "sampleID,fastq_size,raw_reads,raw_bases,clean_reads,clean_bases,\
 qc30_rate,mapping_rate(%),on-target_percent(%),\
 mean_depth,mean_dedup_depth,dup_rate(%),\
@@ -133,7 +136,7 @@ Uniformity_0.5X(%),Uniformity_1X(%),\
 150x_depth_percent(%),200x_depth_percent(%),\
 300x_depth_percent(%),400x_depth_percent(%),\
 500x_depth_percent(%)" > $qc_dir/QC_summary.csv
-
+fi
 
 
 # ---------------------------------------------------------------------- #
