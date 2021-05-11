@@ -4,6 +4,7 @@
 # Perform:                                                                              #
 #   Trimming (fastp) +                                                                  #
 #   Alignment (Sentieon-bwa) +                                                          #
+#   Deduplication +                                                                     #
 #   statistic analysis +                                                                #
 #   CNV calling (ichorCNA)                                                              #
 # ------------------------------------------------------------------------------------- #
@@ -20,6 +21,8 @@
 # tumor:   ${sampleID}_tumor_R[1|2].fastq.gz                                            #
 # normal:  ${sampleID}_normal_R[1|2].fastq.gz                                           #
 #                                                                                       #
+# Note:                                                                                 #
+# This script assume you use hg19 reference genome.                                     #
 # ------------------------------------------------------------------------------------- #
 
 
@@ -27,6 +30,8 @@
 # ---------------------------------------------------------------------- #
 sentieon_license="192.168.1.186:8990"
 thread=8
+dedup=true
+low_tfx_setting="true"
 
 # software
 fastp="/data/ngs/softs/fastp/fastp"
@@ -35,19 +40,41 @@ samtools="/public/software/samtools-1.9/samtools"
 bamdst="/public/software/bamdst/bamdst"
 ichorCNA="/public/software/ichorCNA/"
 readCounter="/public/software/hmmcopy_utils/bin/readCounter"
+compute_cin="/public/home/kai/BioinfoStuff/compute_cin_score.R"
 Rscript="/public/software/R_3.6.3/bin/Rscript"
 
 ref="/data/ngs/database/soft_database/GATK_Resource_Bundle/hg19/ucsc.hg19.fasta"
+bed="/public/database/ucsc/hg19_no_gaps.txt"
 
 # PoN
-pon="/public/home/kai/CNVseq_project/simulate_test/unpair/std_pon_median.txt"
+pon="/public/home/kai/CNVseq_project/pon/pon_median.rds"
 
 # switch (on||off)
 do_trim="on"
 do_align="on"
+do_dedup="on"
 do_qc="on"
 do_readcount="on"
 do_icorcna="on"
+
+# low TFx setting
+if [[  low_tfx_setting == "true"  ]];
+then
+    nfx="c(0.95, 0.99, 0.995, 0.999)"
+    ploidy="c(2)"
+    maxCN="3"
+    subclone="c()"
+    scpre="FALSE"
+    chrs="c(1:22)"
+else
+    nfx="c(0.5,0.6,0.7,0.8,0.9)"
+    ploidy="c(2,3)"
+    maxCN="5"
+    subclone="c(1,3)"
+    scpre="FALSE"
+    chrs='c(1:22)'
+fi
+
 
 # ------------------------------ argparser ----------------------------- #
 # ---------------------------------------------------------------------- #
@@ -113,12 +140,14 @@ echo "LOGGING: This is the CNV_seq.sh pipeline"
 echo "========================================================"
 echo "LOGGING: -- settings -- input folder -- ${input_folder}"
 echo "LOGGING: -- settings -- output folder -- ${output_folder}"
+echo "LOGGING: -- settings -- mode -- ${mode}"
+echo "LOGGING: -- settings -- low_tfx_setting -- ${low_tfx_setting}"
 echo "========================================================"
 
 if [[  $do_qc == "on"  ]];
 then
 echo "sampleID,fastq_size,raw_reads,raw_bases,clean_reads,clean_bases,qc30_rate,\
-mapping_rate(%),mean_depth,average_insert_size,std_insert_size" \
+mapping_rate(%),mean_depth,mean_dedup_depth,dup_rate(%),average_insert_size,std_insert_size" \
 > $qc_dir/QC_summary.csv
 fi
 
@@ -185,12 +214,53 @@ do
 
     fi
 
-    # step3 - quality control
+    # step3 - mark duplicates
+    if [[  $do_dedup == "on"  ]] && [[ $dedup == true ]];
+    then
+        echo "LOGGING: ${sampleID} -- `date --rfc-3339=seconds` -- deduplication";
+
+        ${sentieon} driver -t ${thread} \
+        -i ${align_dir}/${sampleID}.tumor.sorted.bam \
+        --algo LocusCollector \
+        --fun score_info ${align_dir}/${sampleID}.tumor.score.txt;
+
+        ${sentieon} driver -t ${thread} \
+        -i ${align_dir}/${sampleID}.tumor.sorted.bam \
+        --algo Dedup --score_info ${align_dir}/${sampleID}.tumor.score.txt \
+        --metrics ${align_dir}/${sampleID}.dedup_metrics.txt \
+        ${align_dir}/${sampleID}.tumor.sorted.dedup.bam;
+
+
+        if [[  $mode == "pair"  ]]; then
+            ${sentieon} driver -t ${thread} \
+            -i ${align_dir}/${sampleID}.normal.sorted.bam \
+            --algo LocusCollector \
+            --fun score_info ${align_dir}/${sampleID}.normal.score.txt;
+
+            ${sentieon} driver -t ${thread} \
+            -i ${align_dir}/${sampleID}.normal.sorted.bam \
+            --algo Dedup \
+            --score_info ${align_dir}/${sampleID}.normal.score.txt \
+            --metrics ${align_dir}/${sampleID}.normal.dedup_metrics.txt \
+            ${align_dir}/${sampleID}.normal.sorted.dedup.bam;
+        fi
+    fi
+
+    # determine bam
+    if [[ $dedup == true ]]; then
+        normal_bam=${align_dir}/${sampleID}.normal.sorted.dedup.bam
+        tumor_bam=${align_dir}/${sampleID}.tumor.sorted.dedup.bam
+    else
+        normal_bam=${align_dir}/${sampleID}.normal.sorted.bam
+        tumor_bam=${align_dir}/${sampleID}.tumor.sorted.bam
+    fi
+
+    # step4 - quality control
     if [[  $do_qc == "on"  ]];
     then
         echo "LOGGING: ${sampleID} -- `date --rfc-3339=seconds` -- qc";
 
-        $samtools stats -@ ${thread} ${align_dir}/${sampleID}.tumor.sorted.bam > ${qc_dir}/${sampleID}.tumor.stats.txt;
+        $samtools stats -@ ${thread} $tumor_bam > ${qc_dir}/${sampleID}.tumor.stats.txt;
 
         tumor_r1=$(du $input_folder/${sampleID}_tumor_R1.fastq.gz -shL |awk '{print $1}');
         tumor_r2=$(du $input_folder/${sampleID}_tumor_R2.fastq.gz -shL |awk '{print $1}');
@@ -219,67 +289,72 @@ do
         tumor_mapping_rate=`python3 -c "print('{:.2f}%'.format($tumor_map_reads/$tumor_clean_reads*100))"`
         tumor_map_bases=`awk -F"\t" '$2 == "bases mapped (cigar):" {print $3}' ${qc_dir}/${sampleID}.tumor.stats.txt`;
         tumor_mean_depth=`python3 -c "print('{:.2f}'.format(${tumor_map_bases}/3101788170))"`;
+        tumor_dup_bases=`awk -F"\t" '$2 == "bases duplicated:" {print $3}' ${qc_dir}/${sampleID}.tumor.stats.txt`;
+        tumor_dedup_depth=`python3 -c "print('{:.2f}'.format((${tumor_map_bases}-${tumor_dup_bases})/3101788170))"`;
+        tumor_dup_rate=`python3 -c "print('{:.2f}'.format(100-${tumor_dedup_depth}/${tumor_mean_depth}*100))"`;
+
         tumor_insert_size=$(awk -F"\t" '$2 == "insert size average:" {print $3}' ${qc_dir}/${sampleID}.tumor.stats.txt);
         tumor_insert_std=$(awk -F"\t" '$2 == "insert size standard deviation:" {print $3}' ${qc_dir}/${sampleID}.tumor.stats.txt);
         
         echo "${sampleID}.tumor,${tumor_r1}/${tumor_r2},${tumor_raw_reads},${tumor_raw_bases},${tumor_clean_reads},${tumor_clean_bases},\
-        ${tumor_qc_rate},${tumor_mapping_rate},${tumor_mean_depth},${tumor_insert_size},${tumor_insert_std}" \
+        ${tumor_qc_rate},${tumor_mapping_rate},${tumor_mean_depth},${tumor_dedup_depth},${tumor_dup_rate},${tumor_insert_size},${tumor_insert_std}" \
         >> ${qc_dir}/QC_summary.csv
 
         if [[  $mode == "pair"  ]];
         then
-            $samtools stats -@ ${thread} ${align_dir}/${sampleID}.normal.sorted.bam > ${qc_dir}/${sampleID}.normal.stats.txt;
+        $samtools stats -@ ${thread} $normal_bam > ${qc_dir}/${sampleID}.normal.stats.txt;
 
-            normal_r1=$(du $input_folder/${sampleID}_normal_R1.fastq.gz -shL |awk '{print $1}');
-            normal_r2=$(du $input_folder/${sampleID}_normal_R2.fastq.gz -shL |awk '{print $1}');
+        normal_r1=$(du $input_folder/${sampleID}_normal_R1.fastq.gz -shL |awk '{print $1}');
+        normal_r2=$(du $input_folder/${sampleID}_normal_R2.fastq.gz -shL |awk '{print $1}');
 
-            normal_raw_reads=`python3 -c "import json; \
-            fh = json.load(open('$trim_dir/${sampleID}.normal.trim.json', 'r')); \
-            print(fh['summary']['before_filtering']['total_reads'])"`
+        normal_raw_reads=`python3 -c "import json; \
+        fh = json.load(open('$trim_dir/${sampleID}.normal.trim.json', 'r')); \
+        print(fh['summary']['before_filtering']['total_reads'])"`
 
-            normal_clean_reads=`python3 -c "import json; \
-            fh = json.load(open('$trim_dir/${sampleID}.normal.trim.json', 'r')); \
-            print(fh['summary']['after_filtering']['total_reads'])"`
+        normal_clean_reads=`python3 -c "import json; \
+        fh = json.load(open('$trim_dir/${sampleID}.normal.trim.json', 'r')); \
+        print(fh['summary']['after_filtering']['total_reads'])"`
 
-            normal_raw_bases=`python3 -c "import json; \
-            fh = json.load(open('$trim_dir/${sampleID}.normal.trim.json', 'r')); \
-            print(fh['summary']['before_filtering']['total_bases'])"`
+        normal_raw_bases=`python3 -c "import json; \
+        fh = json.load(open('$trim_dir/${sampleID}.normal.trim.json', 'r')); \
+        print(fh['summary']['before_filtering']['total_bases'])"`
 
-            normal_clean_bases=`python3 -c "import json; \
-            fh = json.load(open('$trim_dir/${sampleID}.normal.trim.json', 'r')); \
-            print(fh['summary']['after_filtering']['total_bases'])"`
+        normal_clean_bases=`python3 -c "import json; \
+        fh = json.load(open('$trim_dir/${sampleID}.normal.trim.json', 'r')); \
+        print(fh['summary']['after_filtering']['total_bases'])"`
 
-            normal_qc_rate=`python3 -c "import json; \
-            fh = json.load(open('$trim_dir/${sampleID}.normal.trim.json', 'r')); \
-            print(fh['summary']['before_filtering']['q30_rate'])"`
+        normal_qc_rate=`python3 -c "import json; \
+        fh = json.load(open('$trim_dir/${sampleID}.normal.trim.json', 'r')); \
+        print(fh['summary']['before_filtering']['q30_rate'])"`
 
-            normal_map_reads=`awk -F"\t" '$2 == "reads mapped:" {print $3}' ${qc_dir}/${sampleID}.normal.stats.txt`;
-            normal_mapping_rate=`python3 -c "print('{:.2f}%'.format($normal_map_reads/$normal_clean_reads*100))"`
-            normal_map_bases=`awk -F"\t" '$2 == "bases mapped (cigar):" {print $3}' ${qc_dir}/${sampleID}.normal.stats.txt`;
-            normal_mean_depth=`python3 -c "print('{:.2f}'.format(${normal_map_bases}/3101788170))"`;
-            normal_insert_size=$(awk -F"\t" '$2 == "insert size average:" {print $3}' ${qc_dir}/${sampleID}.normal.stats.txt);
-            normal_insert_std=$(awk -F"\t" '$2 == "insert size standard deviation:" {print $3}' ${qc_dir}/${sampleID}.normal.stats.txt);
+        normal_map_reads=`awk -F"\t" '$2 == "reads mapped:" {print $3}' ${qc_dir}/${sampleID}.normal.stats.txt`;
+        normal_mapping_rate=`python3 -c "print('{:.2f}%'.format($normal_map_reads/$normal_clean_reads*100))"`
+        normal_map_bases=`awk -F"\t" '$2 == "bases mapped (cigar):" {print $3}' ${qc_dir}/${sampleID}.normal.stats.txt`;
+        normal_dup_bases=`awk -F"\t" '$2 == "bases duplicated:" {print $3}' ${qc_dir}/${sampleID}.normal.stats.txt`;
+        normal_mean_depth=`python3 -c "print('{:.2f}'.format(${normal_map_bases}/3101788170))"`;
+        normal_dedup_depth=`python3 -c "print('{:.2f}'.format((${normal_map_bases}-${normal_dup_bases})/3101788170))"`;
+        normal_dup_rate=`python3 -c "print('{:.2f}'.format(100-${normal_dedup_depth}/${normal_mean_depth}*100))"`;
 
-            echo "${sampleID}.normal,${normal_r1}/${normal_r2},${normal_raw_reads},${normal_raw_bases},${normal_clean_reads},${normal_clean_bases},\
-            ${normal_qc_rate},${normal_mapping_rate},${normal_mean_depth},${normal_insert_size},${normal_insert_std}" \
-            >> ${qc_dir}/QC_summary.csv
+        normal_insert_size=$(awk -F"\t" '$2 == "insert size average:" {print $3}' ${qc_dir}/${sampleID}.normal.stats.txt);
+        normal_insert_std=$(awk -F"\t" '$2 == "insert size standard deviation:" {print $3}' ${qc_dir}/${sampleID}.normal.stats.txt);
+
+        echo "${sampleID}.normal,${normal_r1}/${normal_r2},${normal_raw_reads},${normal_raw_bases},${normal_clean_reads},${normal_clean_bases},\
+        ${normal_qc_rate},${normal_mapping_rate},${normal_mean_depth},${normal_dedup_depth},${normal_dup_rate},${normal_insert_size},${normal_insert_std}" \
+        >> ${qc_dir}/QC_summary.csv
         fi
-    fi
-
+    fi  
     # step4 - read count
     if [[  $do_readcount == "on"  ]];
     then
         echo "LOGGING: ${sampleID} -- `date --rfc-3339=seconds` -- count reads";
 
         $readCounter --window 1000000 --quality 20 \
-        ${align_dir}/${sampleID}.tumor.sorted.bam > \
-        ${cnv_dir}/${sampleID}.tumor.wig;
+        $tumor_bam > ${cnv_dir}/${sampleID}.tumor.wig;
         
         if [[  $mode == "pair"  ]];
         then
             $readCounter --window 1000000 --quality 20 \
-            ${align_dir}/${sampleID}.normal.sorted.bam > \
-            ${cnv_dir}/${sampleID}.normal.wig;
+            $normal_bam > ${cnv_dir}/${sampleID}.normal.wig;
         fi
     fi
     
@@ -297,30 +372,38 @@ do
             $Rscript ${ichorCNA}/scripts/runIchorCNA.R --id ${sampleID} \
             --WIG ${cnv_dir}/${sampleID}.tumor.wig \
             --NORMWIG ${cnv_dir}/${sampleID}.normal.wig \
-            --ploidy "c(2,3)" \
-            --normal "c(0.5,0.6,0.7,0.8,0.9)" \
-            --maxCN 5 \
+            --ploidy $ploidy \
+            --normal $nfx \
+            --maxCN $maxCN \
             --gcWig ${ichorCNA}/inst/extdata/gc_hg19_1000kb.wig \
             --mapWig ${ichorCNA}/inst/extdata/map_hg19_1000kb.wig \
             --centromere ${ichorCNA}/inst/extdata/GRCh37.p13_centromere_UCSC-gapTable.txt \
-            --scStates "c(1,3)" \
+            --scStates $subclone \
+            --estimateScPrevalence $scpre \
             --txnStrength 10000 \
-            --outDir $cnv_dir/${sampleID}_ichorCNA;
+            --chrs $chrs \
+            --chrTrain $chrs \
+            --outDir $cnv_dir/${sampleID}_ichorCNA \
+            --libdir $ichorCNA;
         fi
 
         if [[  $mode == "single"  ]];
         then
             $Rscript ${ichorCNA}/scripts/runIchorCNA.R --id ${sampleID} \
             --WIG ${cnv_dir}/${sampleID}.tumor.wig \
-            --ploidy "c(2,3)" \
-            --normal "c(0.5,0.6,0.7,0.8,0.9)" \
-            --maxCN 5 \
+            --ploidy $ploidy \
+            --normal $nfx \
+            --maxCN $maxCN \
             --gcWig ${ichorCNA}/inst/extdata/gc_hg19_1000kb.wig \
             --mapWig ${ichorCNA}/inst/extdata/map_hg19_1000kb.wig \
             --centromere ${ichorCNA}/inst/extdata/GRCh37.p13_centromere_UCSC-gapTable.txt \
-            --scStates "c(1,3)" \
+            --scStates $subclone \
+            --estimateScPrevalence $scpre \
             --txnStrength 10000 \
-            --outDir $cnv_dir/${sampleID}_ichorCNA;
+            --chrs $chrs \
+            --chrTrain $chrs \
+            --outDir $cnv_dir/${sampleID}_ichorCNA \
+            --libdir $ichorCNA;
         fi
 
         if [[  $mode == "pon"  ]];
@@ -328,16 +411,26 @@ do
             $Rscript ${ichorCNA}/scripts/runIchorCNA.R --id ${sampleID} \
             --WIG ${cnv_dir}/${sampleID}.tumor.wig \
             --normalPanel $pon \
-            --ploidy "c(2,3)" \
-            --normal "c(0.5,0.6,0.7,0.8,0.9)" \
-            --maxCN 5 \
+            --ploidy $ploidy \
+            --normal $nfx \
+            --maxCN $maxCN \
             --gcWig ${ichorCNA}/inst/extdata/gc_hg19_1000kb.wig \
             --mapWig ${ichorCNA}/inst/extdata/map_hg19_1000kb.wig \
             --centromere ${ichorCNA}/inst/extdata/GRCh37.p13_centromere_UCSC-gapTable.txt \
-            --scStates "c(1,3)" \
+            --scStates $subclone \
+            --estimateScPrevalence $scpre \
             --txnStrength 10000 \
-            --outDir $cnv_dir/${sampleID}_ichorCNA;
+            --chrs $chrs \
+            --chrTrain $chrs \
+            --outDir $cnv_dir/${sampleID}_ichorCNA \
+            --libdir $ichorCNA;
         fi
+    fi
+
+    # step6 - calculate CIN score
+    if [[  $do_cin == "on"  ]];
+    then
+        $Rscript $compute_cin ${cnv_dir}/${sampleID}_ichorCNA/MRD210430-079.RData
     fi
 
 done
