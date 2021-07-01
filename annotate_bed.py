@@ -52,8 +52,9 @@ def read_refFlat(refFlat, genes):
     with open(refFlat, 'r') as f:
         for line in f:
             line = line.strip().split()
-            if genes and (line[0] in genes):
-                annotation[(line[2], int(line[4]), int(line[5]))] = line[0]
+            if genes:
+                if line[0] in genes:
+                    annotation[(line[2], int(line[4]), int(line[5]))] = line[0]
             else:
                 annotation[(line[2], int(line[4]), int(line[5]))] = line[0]
     return annotation
