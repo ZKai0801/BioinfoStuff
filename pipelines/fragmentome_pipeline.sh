@@ -35,17 +35,18 @@ picard="/public/software/picard.jar"
 fastqc="/public/software/FastQC/fastqc"
 python3_multiqc='/public/ngs/softs/MultiQC-master/python3/python3.6.4/bin/python3.6'
 calc_fraglen="/public/home/kai/projects/fragmentome/calc_fraglen_linux.R"
+Rscript="/public/software/R_3.5.1/bin/Rscript"
 
 ref="/public/database/GATK_Resource_Bundle/hg19/ucsc.hg19.fasta"
 bowtie_index="/public/database/GATK_Resource_Bundle/hg19/hg19_bowtie2"
 
 
 # switch (on||off)
-do_trim="on"
-do_align="on"
-do_dedup="on"
-do_qc="on"
-do_frag="on"
+# do_trim="on"
+# do_align="on"
+# do_dedup="on"
+# do_qc="on"
+# do_frag="on"
 adjust_gc="on"
 
 # ------------------------------ argparser ----------------------------- #
@@ -261,9 +262,9 @@ do
 
         $bedtools nuc -fi $ref -bed $frag_dir/$sampleID.bed | \
         awk 'NR!=1 {OFS="\t"; print $1, $2, $3, $4, $6}' | \
-        awk '($1 != "chrM") && ($3 - $2 >= 100) && ($3 - $2 <= 220)' > $frag_dir/$sampleID.gc.bed;
+        awk '($1 != "chrM") && (length($1) <= 5) ($3 - $2 >= 100) && ($3 - $2 <= 220)' > $frag_dir/$sampleID.gc.bed;
 
-        Rscripts $calc_fraglen $frag_dir/$sampleID.gc.bed 
+        $Rscript $calc_fraglen $frag_dir/$sampleID.gc.bed 
     fi
 done
 
