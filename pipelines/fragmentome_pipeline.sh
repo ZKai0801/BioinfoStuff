@@ -1,6 +1,6 @@
 #!/usr/bin/bash
 
-version="v1.0"
+version="v2.0"
 
 # ----------------------------------- Description ------------------------------------- #
 # Perform:                                                                              #
@@ -23,7 +23,7 @@ version="v1.0"
 # --------------------------- set parameters --------------------------- #
 # ---------------------------------------------------------------------- #
 
-sentieon_license="192.168.1.186:8990"
+sentieon_license="172.16.11.242:8991"
 thread=8
 
 fastp="/data/ngs/softs/fastp/fastp"
@@ -34,26 +34,28 @@ bowtie2="/public/home/kai/softwares/bowtie2-2.4.4/bowtie2"
 picard="/public/software/picard.jar"
 fastqc="/public/software/FastQC/fastqc"
 python3_multiqc='/public/ngs/softs/MultiQC-master/python3/python3.6.4/bin/python3.6'
-calc_fraglen="/public/home/kai/projects/fragmentome/calc_fraglen_linux.R"
 Rscript="/public/software/R_3.5.1/bin/Rscript"
 
 ref="/public/database/GATK_Resource_Bundle/hg19/ucsc.hg19.fasta"
 bowtie_index="/public/database/GATK_Resource_Bundle/hg19/hg19_bowtie2"
+filt_ref="/public/home/kai/projects/fragmentome/sources/hg19.filters.bed"
+ref_gc="/public/home/kai/projects/fragmentome/sources/target20.tsv"
+templ_bins="/public/home/kai/projects/fragmentome/sources/templ_bins.tsv"
 
 
 # switch (on||off)
-# do_trim="on"
-# do_align="on"
-# do_dedup="on"
-# do_qc="on"
-# do_frag="on"
+do_trim="on"
+do_align="on"
+do_dedup="on"
+do_qc="on"
+do_frag="on"
 adjust_gc="on"
 
 # ------------------------------ argparser ----------------------------- #
 # ---------------------------------------------------------------------- #
 
 if [[  $1 == '-h'  ]]; then
-    echo "Usage: ./snp_calling.sh [input_folder] [output_folder] [BED]"
+    echo "Usage: ./fragmentome_pipeline.sh [input_folder] [output_folder]"
     echo "-------------------------------------------------------------------------"
     echo "[input_folder] should contain fastq files with following naming system:"
     echo "  \${sampleID}_R[1|2].fastq.gz"
@@ -71,7 +73,7 @@ fi
 
 if [[ ! -d $output_folder ]]; 
 then
-    mkdir $output_folder
+    mkdir -p $output_folder
 fi
 
 
@@ -155,6 +157,8 @@ do
 
         $samtools index ${align_dir}/${sampleID}.sorted.bam;
 
+        rm $trim_dir/${sampleID}_trim_R*.fastq.gz
+
         # ($sentieon bwa mem -M -R "@RG\tID:${sampleID}\tSM:${sampleID}\tPL:illumina" \
         # -t ${thread} -K 10000000 ${ref} \
         # $trim_dir/${sampleID}_trim_R1.fastq.gz \
@@ -175,6 +179,8 @@ do
         M=${align_dir}/${sampleID}.dup_metrics.txt; 
 
         $samtools index ${align_dir}/${sampleID}.sorted.dedup.bam
+
+        rm ${align_dir}/${sampleID}.sorted.bam*
 
         # ${sentieon} driver -t ${thread} \
         # -i ${align_dir}/${sampleID}.sorted.bam \
@@ -251,7 +257,8 @@ do
         awk '($2 != -1) && ($5 != -1) && ($1 == $4)' | \
         cut -f 1,2,6,8 | \
         awk '($4 >= 30) && ($3 - $2 < 1000)' | \
-        sort --parallel 8 -k1,1 -k2,2n -S 32G -T $frag_dir/tmp/ > \
+        sort --parallel 8 -k1,1 -k2,2n -S 32G -T $frag_dir/tmp/ | \
+        grep -v "_" | grep -v "chrM" > \
         $frag_dir/$sampleID.bed;
     fi
 
@@ -259,12 +266,17 @@ do
     if [[  $adjust_gc == "on"  ]];
     then
         echo "LOGGING: $sampleID -- `date --rfc-3339=seconds` -- adjust for gc content"
-
+        # get gc content for each fragment
         $bedtools nuc -fi $ref -bed $frag_dir/$sampleID.bed | \
         awk 'NR!=1 {OFS="\t"; print $1, $2, $3, $4, $6}' | \
-        awk '($1 != "chrM") && (length($1) <= 5) ($3 - $2 >= 100) && ($3 - $2 <= 220)' > $frag_dir/$sampleID.gc.bed;
+        awk '(length($1) <= 5) ($3 - $2 >= 100) && ($3 - $2 <= 220)' > $frag_dir/$sampleID.step1_gc.bed;
 
-        $Rscript $calc_fraglen $frag_dir/$sampleID.gc.bed 
+        # filter blacklisted regions
+        $bedtools intersect -v -a $frag_dir/$sampleID.step1_gc.bed -b $filt_ref | \
+        awk '{printf "%s\t%s\t%s\t%s\t%.2f\n", $1, $2, $3, $4, $5 }' | \
+        > $frag_dir/$sampleID.step2_filt.bed
+
+        Rscript $binning_frag -i $frag_dir/$sampleID.step2_filt.bed -r $ref_gc -t $templ_bins -o $frag_dir/$sampleID.5mb.csv
     fi
 done
 
