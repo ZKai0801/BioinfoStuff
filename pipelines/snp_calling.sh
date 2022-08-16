@@ -170,7 +170,8 @@ do
         --in2 $input_folder/${sampleID}_R2.fastq.gz \
         --out1 $trim_dir/${sampleID}_trim_R1.fastq.gz \
         --out2 $trim_dir/${sampleID}_trim_R2.fastq.gz \
-        -c --length_required 3 --detect_adapter_for_pe -p \
+        -c -q 25 \
+        --length_required 50 --detect_adapter_for_pe -p \
         --thread ${thread} \
         --html $trim_dir/${sampleID}.trim.html \
         --json $trim_dir/${sampleID}.trim.json;
