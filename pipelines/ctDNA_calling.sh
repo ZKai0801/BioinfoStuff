@@ -1,6 +1,8 @@
 #! /usr/bin/bash
 
-version="v1.2"
+#PBS -l nodes=1:ppn=8
+
+version="v1.3"
 
 # ----------------------------------- Description ------------------------------------- #
 # Perform:                                                                              #
@@ -23,41 +25,40 @@ version="v1.2"
 # ---------------------------------------------------------------------- #
 
 mode="single"
-umi_templ="4M+T,4M+T"
-# umi_templ="6M1S+T,6M1S+T"
+# umi_templ="4M+T,4M+T"   # capp-seq 原版
+# umi_templ="6M1S+T,6M1S+T" # 生产流程默认UMI
+umi_templ="6M+T,6M+T"
 
 # path to software & scripts
 fastp="/data/ngs/softs/fastp/fastp"
-sentieon="/data/ngs/softs/sentieon/sentieon-genomics-202112.01/bin/sentieon"
-bcftools="/public/software/bcftools-1.9/bcftools"
-samtools="/public/software/samtools-1.14/samtools"
-bamdst="/public/software/bamdst/bamdst"
-vep="/public/software/98vep/ensembl-vep/vep"
-bgzip="/public/software/htslib-1.9/bin/bgzip"
-tabix="/public/software/htslib-1.9/bin/tabix"
-VIC="/public/software/VIC"
-annovar="/public/software/annovar/"
-varscan="/public/software/varscan/VarScan.v2.4.2.jar"
+sentieon="/data/ngs/softs/sentieon/sentieon-genomics-202112.06/bin/sentieon"
+bcftools="/data/ngs/softs/bcftools/bcftools"
+samtools="/data/ngs/softs/samtools-1.16.1/samtools"
+bamdst="/data/ngs/softs/bamdst/bamdst"
+vep="/data/ngs/softs/98vep/ensembl-vep/vep"
+bgzip="/data/ngs/softs/htslib/bgzip"
+tabix="/data/ngs/softs/htslib/tabix"
+varscan="/data/ngs/softs/varscan/VarScan.v2.4.2.jar"
+genefuse="/data/ngs/softs/genefuse/genefuse"
 
-merge_mnv="/public/software/BioinfoStuff/tertiary_analysis/merge_mnv.py"
-anno_hgvs="/public/software/BioinfoStuff/tertiary_analysis/anno_hgvs.py"
-rm_common_variant="/public/software/BioinfoStuff/rm_common_variant.py"
-hotspot_filt="/public/test_data/capp_seq/hotspot_filter.py"
+anno_hgvs="/data/ngs/scripts/workflow/mrd/anno_hgvs_mrd.py"
+hotspot_filt="/data/ngs/scripts/workflow/script/hotspot_filter.py"
 
-sentieon_license="172.16.11.242:8991"
-thread=8
+sentieon_license="192.168.1.186:8990"
+thread=6
 
 # additional files
 ref="/data/ngs/database/soft_database/GATK_Resource_Bundle/hg19/ucsc.hg19.fasta"
-dbsnp="/public/database/GATK_Resource_Bundle/hg19/dbsnp_138.hg19.vcf"
+dbsnp="/data/ngs/database/soft_database/GATK_Resource_Bundle/hg19/dbsnp_138.hg19.vcf.gz"
 k1="/data/ngs/database/soft_database/GATK_Resource_Bundle/hg19/dbsnp_138.hg19.vcf.gz"
 k2="/data/ngs/database/soft_database/GATK_Resource_Bundle/hg19/Mills_and_1000G_gold_standard.indels.hg19.sites.vcf.gz"
-k3="/data/ngs/database/soft_database/GATK_Resource_Bundle/hg19/Mills_and_1000G_gold_standard.indels.hg19.sites.vcf.gz"
-refflat="/public/database/GATK_Resource_Bundle/refFlat.txt"
-vep_dir="/public/software/vep_98/"
+k3="/data/ngs/database/soft_database/GATK_Resource_Bundle/hg19/1000G_phase1.indels.hg19.sites.vcf.gz"
+refflat="/data/ngs/database/soft_database/GATK_Resource_Bundle/refFlat.txt"
+vep_dir="/data/ngs/database/soft_database/vep_98"
 cache_version="98"
-#clinic_transcripts="/public/home/kai/database/LRG/parsed_LRG.tsv"
-clinic_transcripts="/public/database/LRG/parsed_LRG.tsv"
+clinic_transcripts="/data/ngs/database/publicDataBase/clinic_transcript.tsv"
+cbioportal="/data/ngs/database/publicDataBase/cBioportal_hotspot.csv"
+fusion_templ="/data/ngs/database/publicDataBase/GRD_fusions.tsv"
 
 
 # switch (on||off)
@@ -66,11 +67,12 @@ do_align="on"
 do_qc="on"
 do_realign="on"
 do_tnscope="on"
-do_mpileup="on"
-do_varscan="on"
+# do_mpileup="on"
+# do_varscan="on"
 do_filt="on"
 do_anno="on"
 do_filt2="on"
+do_fusion="on"
 
 
 # ------------------------------ argparser ----------------------------- #
@@ -86,18 +88,20 @@ fi
 
 input_folder=`realpath $1`
 output_folder=`realpath $2`
+# output_folder="/data/ngs/files/clean/YDLYX-20230117-L-01-2023-01-191316/$(basename $input_folder)/"
 
 if [[  -f $3  ]];
 then
-    bed=`realpath $3`
+   bed=`realpath $3`
 else
-    bed="empty"
+   bed="empty"
 fi
 
+# bed="/data/ngs/database/bed/GRD_v2_probeCov.bed"
 
 if [[ ! -d $input_folder  ]];
 then
-    echo "Error: input_folder does not Found!"
+    echo "IOError: $input_folder does not Found!"
     exit 1
 fi
 
@@ -135,6 +139,11 @@ if [[ ! -d $qc_dir ]]; then
     mkdir $qc_dir
 fi
 
+fusion_dir=$output_folder/fusion/
+if [[  ! -d $fusion_dir  ]]; then
+    mkdir $fusion_dir
+fi
+
 # ---------------------------  LOGGING  -------------------------------- #
 # ---------------------------------------------------------------------- #
 echo "LOGGING: `date --rfc-3339=seconds` -- Analysis started"
@@ -153,9 +162,9 @@ mean_depth,mean_dedup_depth,dup_rate(%),\
 average_insert_size,std_insert_size,\
 Uniformity_0.1X(%),Uniformity_0.2X(%),\
 Uniformity_0.5X(%),Uniformity_1X(%),\
-1000x_depth_percent(%),2000x_depth_percent(%),\
-3000x_depth_percent(%),4000x_depth_percent(%),\
-5000x_depth_percent(%)" \
+300x_depth_percent(%),500x_depth_percent(%),\
+1000x_depth_percent(%),1500x_depth_percent(%),\
+2000x_depth_percent(%)" \
 > $qc_dir/QC_summary.csv
 
 
@@ -223,7 +232,10 @@ function run_qc {
     
     bam=${align_dir}/${sampleID}.sorted.bam
 
-    $samtools stats -@ ${thread} $bam > ${qc_dir}/${sampleID}.stats.txt;
+    if [[ ! -f ${qc_dir}/${sampleID}.stats.txt  ]];
+    then
+        $samtools stats -@ ${thread} $bam > ${qc_dir}/${sampleID}.stats.txt;
+    fi
 
     local r1=$(du $input_folder/${sampleID}_R1.fastq.gz -shL |awk '{print $1}');
     local r2=$(du $input_folder/${sampleID}_R2.fastq.gz -shL |awk '{print $1}');
@@ -260,19 +272,16 @@ function run_qc {
             mkdir $qc_dir/${sampleID};
         fi;
 
-        $bamdst -p $bed -o $qc_dir/${sampleID} $bam;
+        if [[ ! -f $qc_dir/${sampleID}/coverage.report  ]];
+        then
+            $bamdst -p $bed -o $qc_dir/${sampleID} $bam;
+        fi
 
         local mapping_rate=$(grep "Fraction of Mapped Reads" $qc_dir/${sampleID}/coverage.report | awk -F"\t" '{print $2}');
         local mean_depth=$(grep "Average depth" $qc_dir/${sampleID}/coverage.report |head -n 1 |awk -F"\t" '{print $2}');
         local mean_dedup_depth=$(grep "Average depth(rmdup)" $qc_dir/${sampleID}/coverage.report |head -n 1 |awk -F"\t" '{print $2}');
         local dup_rate=$(grep "Fraction of PCR duplicate reads" $qc_dir/${sampleID}/coverage.report |awk -F"\t" '{print $2}');
         local on_target=$(grep "Fraction of Target Reads in all reads" $qc_dir/${sampleID}/coverage.report |awk -F"\t" '{print $2}');
-
-        local cov_1000x=$(less -S $qc_dir/${sampleID}/depth.tsv.gz | awk 'BEGIN {count=0} {if ($4 > 1000) count+=1} END {print count/NR*100}');
-        local cov_2000x=$(less -S $qc_dir/${sampleID}/depth.tsv.gz | awk 'BEGIN {count=0} {if ($4 > 2000) count+=1} END {print count/NR*100}');
-        local cov_3000x=$(less -S $qc_dir/${sampleID}/depth.tsv.gz | awk 'BEGIN {count=0} {if ($4 > 3000) count+=1} END {print count/NR*100}');
-        local cov_4000x=$(less -S $qc_dir/${sampleID}/depth.tsv.gz | awk 'BEGIN {count=0} {if ($4 > 4000) count+=1} END {print count/NR*100}');
-        local cov_5000x=$(less -S $qc_dir/${sampleID}/depth.tsv.gz | awk 'BEGIN {count=0} {if ($4 > 5000) count+=1} END {print count/NR*100}');
 
         local uniformity_01x=$(less -S $qc_dir/${sampleID}/depth.tsv.gz | awk -v depth=${mean_dedup_depth} 'BEGIN {count=0} {if ($4 > depth*0.1) count+=1} END {print count/NR*100}');
         local uniformity_02x=$(less -S $qc_dir/${sampleID}/depth.tsv.gz | awk -v depth=${mean_dedup_depth} 'BEGIN {count=0} {if ($4 > depth*0.2) count+=1} END {print count/NR*100}');
@@ -306,17 +315,27 @@ function run_qc {
 
         if [[  $bed != "empty"  ]];
         then
-            $bamdst -p $bed -o $qc_dir/${sampleID}_umi $dedup_bam;
+
+            if [[ ! -f $qc_dir/${sampleID}_umi/coverage.report  ]];
+            then
+                $bamdst -p $bed -o $qc_dir/${sampleID}_umi $dedup_bam;
+            fi
             
             local mean_dedup_depth=$(grep "Average depth" $qc_dir/${sampleID}_umi/coverage.report |head -n 1 |awk -F"\t" '{print $2}');
             local dup_rate=`python3 -c "print(round(100-$mean_dedup_depth/$mean_depth*100, 2))"`
+
+            local cov_300x=$(less -S $qc_dir/${sampleID}_umi/depth.tsv.gz | awk 'BEGIN {count=0} {if ($4 > 300) count+=1} END {print count/NR*100}');
+            local cov_500x=$(less -S $qc_dir/${sampleID}_umi/depth.tsv.gz | awk 'BEGIN {count=0} {if ($4 > 500) count+=1} END {print count/NR*100}');
+            local cov_1000x=$(less -S $qc_dir/${sampleID}_umi/depth.tsv.gz | awk 'BEGIN {count=0} {if ($4 > 1000) count+=1} END {print count/NR*100}');
+            local cov_1500x=$(less -S $qc_dir/${sampleID}_umi/depth.tsv.gz | awk 'BEGIN {count=0} {if ($4 > 1500) count+=1} END {print count/NR*100}');
+            local cov_2000x=$(less -S $qc_dir/${sampleID}_umi/depth.tsv.gz | awk 'BEGIN {count=0} {if ($4 > 2000) count+=1} END {print count/NR*100}');
         fi
     fi
 
     echo "${sampleID},${r1}/${r2},${raw_reads},${raw_bases},${clean_reads},${clean_bases},\
     ${qc_rate},${trim_rate},${mapping_rate},${on_target},${mean_depth},${mean_dedup_depth},${dup_rate},${insert_size},${insert_std},\
     ${uniformity_01x},${uniformity_02x},${uniformity_05x},${uniformity_1x},\
-    ${cov_1000x},${cov_2000x},${cov_3000x},${cov_4000x},${cov_5000x}" \
+    ${cov_300x},${cov_500x},${cov_1000x},${cov_1500x},${cov_2000x}" \
     >> $qc_dir/QC_summary.csv
 }
 
@@ -467,8 +486,20 @@ function filter_vars2 {
     echo "LOGGING: ${sampleID} -- `date --rfc-3339=seconds` -- keep hotspot variants only";
 
     # remove variants with max-MAF > 0.1% 
-    python3 $hotspot_filt -i $tnscope_dir/$sampleID.step6_anno.vcf > $tnscope_dir/$sampleID.step7_filt.vcf
+    python3 $hotspot_filt -i $tnscope_dir/$sampleID.step6_anno.vcf -c $cbioportal > $tnscope_dir/$sampleID.step7_filt.vcf
 
+}
+
+
+# 9. run genefuse
+function run_genefuse {
+    echo "LOGGING: ${sampleID} -- `date --rfc-3339=seconds` -- running genefuse";
+
+    $genefuse -t ${thread} -r ${ref} \
+    -f $fusion_templ \
+    -1 $trim_dir/$sampleID.umi_consensus.fq.gz \
+    -h $fusion_dir/${sampleID}.fusion.html \
+    -j $fusion_dir/${sampleID}.fusion.json  1> $fusion_dir/${sampleID}.fusion.txt
 }
 
 
@@ -632,6 +663,11 @@ elif [[  $mode == 'single'  ]]; then
         if [[  $do_filt2 == "on"  ]];
         then
             filter_vars2;
+        fi
+
+        if [[  $do_fusion == "on"  ]];
+        then
+            run_genefuse;
         fi
     done
 fi
