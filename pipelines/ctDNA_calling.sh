@@ -2,7 +2,7 @@
 
 #PBS -l nodes=1:ppn=8
 
-version="v1.3"
+version="v1.4"
 
 # ----------------------------------- Description ------------------------------------- #
 # Perform:                                                                              #
@@ -30,22 +30,26 @@ mode="single"
 umi_templ="6M+T,6M+T"
 
 # path to software & scripts
+python3="/public/software/python3.7.1/bin/python3"
+Rscript="/public/software/R_3.5.1/bin/Rscript"
 fastp="/data/ngs/softs/fastp/fastp"
 sentieon="/data/ngs/softs/sentieon/sentieon-genomics-202112.06/bin/sentieon"
-bcftools="/data/ngs/softs/bcftools/bcftools"
-samtools="/data/ngs/softs/samtools-1.16.1/samtools"
-bamdst="/data/ngs/softs/bamdst/bamdst"
-vep="/data/ngs/softs/98vep/ensembl-vep/vep"
-bgzip="/data/ngs/softs/htslib/bgzip"
-tabix="/data/ngs/softs/htslib/tabix"
-varscan="/data/ngs/softs/varscan/VarScan.v2.4.2.jar"
+bcftools="/public/software/bcftools-1.9/bcftools"
+samtools="/public/software/samtools-1.14/samtools"
+bamdst="/public/software/bamdst/bamdst"
+vep="/public/software/98vep/ensembl-vep/vep"
+bgzip="/public/software/htslib-1.9/bin/bgzip"
+tabix="/public/software/htslib-1.9/bin/tabix"
+varscan="/public/software/varscan/VarScan.v2.4.2.jar"
 genefuse="/data/ngs/softs/genefuse/genefuse"
 
-anno_hgvs="/data/ngs/scripts/workflow/mrd/anno_hgvs_mrd.py"
-hotspot_filt="/data/ngs/scripts/workflow/script/hotspot_filter.py"
+anno_hgvs="/public/software/BioinfoStuff/tertiary_analysis/anno_hgvs.py"
+hotspot_filt="/public/test_data/capp_seq/scripts/hotspot_filter.py"
 
-sentieon_license="192.168.1.186:8990"
-thread=6
+cnvkit="/public/software/cnvkit/cnvkit.py"
+
+sentieon_license="172.16.11.242:8991"
+thread=8
 
 # additional files
 ref="/data/ngs/database/soft_database/GATK_Resource_Bundle/hg19/ucsc.hg19.fasta"
@@ -59,6 +63,7 @@ cache_version="98"
 clinic_transcripts="/data/ngs/database/publicDataBase/clinic_transcript.tsv"
 cbioportal="/data/ngs/database/publicDataBase/cBioportal_hotspot.csv"
 fusion_templ="/data/ngs/database/publicDataBase/GRD_fusions.tsv"
+cnvref="/public/test_data/capp_seq/cnvref.cnn"
 
 
 # switch (on||off)
@@ -67,12 +72,13 @@ do_align="on"
 do_qc="on"
 do_realign="on"
 do_tnscope="on"
-# do_mpileup="on"
-# do_varscan="on"
+do_mpileup="on"
+do_varscan="on"
 do_filt="on"
 do_anno="on"
 do_filt2="on"
 do_fusion="on"
+do_cnv="on"
 
 
 # ------------------------------ argparser ----------------------------- #
@@ -107,7 +113,7 @@ fi
 
 
 
-# ---------------  orgnise output directory structure  ----------------- #
+# ---------------  organise output directory structure  ----------------- #
 # ---------------------------------------------------------------------- #
 if [[ ! -d $output_folder ]]; 
 then
@@ -142,6 +148,11 @@ fi
 fusion_dir=$output_folder/fusion/
 if [[  ! -d $fusion_dir  ]]; then
     mkdir $fusion_dir
+fi
+
+cnv_dir=$output_folder/cnv/
+if [[  ! -d $cnv_dir  ]]; then
+    mkdir $cnv_dir
 fi
 
 # ---------------------------  LOGGING  -------------------------------- #
@@ -377,20 +388,18 @@ function run_tnscope {
     elif [[  $mode == "single"  ]];
     then
         $sentieon driver -t ${thread} -r ${ref} \
-        -i $bam \
+        -i $bam --interval $bed \
         --algo TNscope \
-        --tumor_sample ${sampleID} \
-        --dbsnp ${dbsnp} \
-        --trim_soft_clip \
+        --tumor_sample $sampleID \
+        --dbsnp $dbsnp \
         --min_tumor_allele_frac 0.0002 \
-        --filter_t_alt_frac 0.0002 \
-        --clip_by_minbq 1 \
-        --min_base_qual 30 \
-        --max_fisher_pv_active 0.05 \
+        --min_tumor_lod 3.0 \
+        --min_init_tumor_lod 3.0 \
+        --pcr_indel_model NONE \
+        --min_base_qual 40 \
+        --resample_depth 10000000 \
         --assemble_mode 4 \
-        --min_init_tumor_lod 1.0 \
-        --min_tumor_lod 2.0 \
-        --resample_depth 1000000000 \
+        --disable_detector sv \
         ${tnscope_dir}/${sampleID}.raw.vcf;
     fi
 }
@@ -400,29 +409,31 @@ function run_tnscope {
 function filter_vars {
     echo "LOGGING: $sampleID -- `date --rfc-3339=seconds` -- filter low quality variants";
 
-    grep -v "SVTYPE=BND" ${tnscope_dir}/${sampleID}.raw.vcf > ${tnscope_dir}/${sampleID}.step0_snv.vcf
+
+    grep -v "SVTYPE=" ${tnscope_dir}/${sampleID}.raw.vcf > ${tnscope_dir}/${sampleID}.step0_snv.vcf
 
     # left normalisation
     $bcftools norm -m -both -f ${ref} \
     ${tnscope_dir}/${sampleID}.step0_snv.vcf \
     -o ${tnscope_dir}/${sampleID}.step1_norm.vcf;
 
-    $bcftools annotate -x "FILTER/triallelic_site" ${tnscope_dir}/${sampleID}.step1_norm.vcf | \
-    $bcftools filter -m + -s "low_qual" -e "QUAL < 10" | \
-    $bcftools filter -m + -s "short_tandem_repeat" -e "RPA[0]>=5" | \
-    $bcftools filter -m + -s "read_pos_bias" -e "FMT/ReadPosRankSumPS[0] < -5" | \
-    $bcftools filter -m + -s "base_qual_bias" -e "FMT/BaseQRankSumPS[0] < -5" | \
-    $sentieon util vcfconvert - ${tnscope_dir}/${sampleID}.step2_pre_filt.vcf
+    bgzip -f ${tnscope_dir}/${sampleID}.step1_norm.vcf;
+    tabix -p vcf -f ${tnscope_dir}/${sampleID}.step1_norm.vcf.gz;
+
+    # TNscope default filter
+    $sentieon pyexec $tnscope_filt \
+    -v ${tnscope_dir}/${sampleID}.step1_norm.vcf.gz \
+    --tumor_sample ${sampleID} \
+    -x ctdna_umi \
+    --min_tumor_af 0.0002 --min_depth 1000 \
+    ${tnscope_dir}/$sampleID.step2_filt.vcf || \
+    { echo "LOGGING: $sampleID -- TNscope filter failed"; exit 1; }
+
 
     # remove variants that non-pass & qual < 100
     awk '$0 ~ /^#/ || ($6 > 100 && $7 == "PASS")' \
-    ${tnscope_dir}/${sampleID}.step2_pre_filt.vcf >\
+    ${tnscope_dir}/${sampleID}.step2_filt.vcf >\
     ${tnscope_dir}/${sampleID}.step3_filt.vcf;
-
-    $bcftools filter -i "(FORMAT/AF[:0]) >= 0.0002 & (FORMAT/AD[:0]+AD[:1]) >= 1000" \
-    ${tnscope_dir}/${sampleID}.step3_filt.vcf \
-    -o ${tnscope_dir}/${sampleID}.step4_filt.vcf
-
 }
 
 
@@ -473,11 +484,11 @@ function anno_vars {
     --assembly GRCh37 --format vcf --fa ${ref} --force_overwrite --vcf \
     --gene_phenotype --use_given_ref --refseq --check_existing \
     --hgvs --hgvsg --transcript_version --max_af \
-    --vcf_info_field ANN -i ${tnscope_dir}/${sampleID}.step4_filt.vcf \
-    -o ${tnscope_dir}/${sampleID}.step5_anno.vcf;
+    --vcf_info_field ANN -i ${tnscope_dir}/${sampleID}.step3_filt.vcf \
+    -o ${tnscope_dir}/${sampleID}.step4_anno.vcf;
 
-    python3 $anno_hgvs ${tnscope_dir}/${sampleID}.step5_anno.vcf \
-    $clinic_transcripts $refflat -o $tnscope_dir/$sampleID.step6_anno.vcf;
+    $python3 $anno_hgvs ${tnscope_dir}/${sampleID}.step4_anno.vcf \
+    $clinic_transcripts $refflat -o $tnscope_dir/$sampleID.step5_anno.vcf;
 }
 
 
@@ -486,8 +497,7 @@ function filter_vars2 {
     echo "LOGGING: ${sampleID} -- `date --rfc-3339=seconds` -- keep hotspot variants only";
 
     # remove variants with max-MAF > 0.1% 
-    python3 $hotspot_filt -i $tnscope_dir/$sampleID.step6_anno.vcf -c $cbioportal > $tnscope_dir/$sampleID.step7_filt.vcf
-
+    $python3 $hotspot_filt -i $tnscope_dir/$sampleID.step5_anno.vcf -c $cbioportal > $tnscope_dir/$sampleID.step6_filt.vcf
 }
 
 
@@ -503,6 +513,27 @@ function run_genefuse {
 }
 
 
+# 10. calculate cnv
+function calculate_cnv {
+    echo "LOGGING: ${sampleID} -- `date --rfc-3339=seconds` -- calculating cnv";
+    
+    # cnvkit::coverage: read depth in target regions to get Bin Coverages
+    $python3 $cnvkit coverage $align_dir/${sampleID}.sorted.dedup.bam $bed -o $cnv_dir/${sampleID}.targetcoverage.cnn
+    
+    # cnvkit::fix: normalizes a tumor sample, correct biases to get Copy Ratios
+    $python3 $cnvkit fix $cnv_dir/${sampleID}.targetcoverage.cnn $cnv_dir/antitarget.cnn $cnvref -o $cnv_dir/${sampleID}.cnr
+    
+    # find segments using call_cnv.py
+    $python3 /public/test_data/capp_seq/scripts/call_cnv.py $cnv_dir/${sampleID}.cnr -p $cnvref -o $cnv_dir/${sampleID}.cns
+    
+    # visualize
+    $Rscript /public/test_data/capp_seq/scripts/draw_cnvkit-copy.R -i $cnv_dir/${sampleID}.cns -o $cnv_dir/${sampleID}.jpg
+
+    # find segments -alternative cnvkit
+    $python3 $cnvkit segment $cnv_dir/${sampleID}.cnr -o $cnv_dir/${sampleID}_cnvkit.cns --rscript-path $Rscript
+    $Rscript /public/test_data/capp_seq/scripts/format_cns_alt.R -r $cnv_dir/${sampleID}.cnr -s $cnv_dir/${sampleID}_cnvkit.cns -o $cnv_dir/${sampleID}_alt.cns 
+    $Rscript /public/test_data/capp_seq/scripts/draw_cnvkit-copy.R -i $cnv_dir/${sampleID}_alt.cns -o $cnv_dir/${sampleID}_alt.jpg
+}
 
 # ---------------------------------------------------------------------- #
 # ---------------------------  Pipeline  ------------------------------- #
@@ -631,7 +662,7 @@ elif [[  $mode == 'single'  ]]; then
             run_realignment;
         fi
 
-        bam=${align_dir}/${sampleID}.realign.bam
+        #bam=${align_dir}/${sampleID}.realign.bam
 
 
         # step7 - variant calling
@@ -669,6 +700,14 @@ elif [[  $mode == 'single'  ]]; then
         then
             run_genefuse;
         fi
+        
+        #bam=${align_dir}/${sampleID}.sorted.dedup.bam
+        if [[  $do_cnv == "on"  ]];
+        then
+            calculate_cnv;
+        fi
+
+
     done
 fi
 
