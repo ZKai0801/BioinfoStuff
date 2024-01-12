@@ -31,8 +31,8 @@
 # --------------------------- set parameters --------------------------- #
 # ---------------------------------------------------------------------- #
 
-sentieon_license="192.168.1.186:8990"
-thread=16
+sentieon_license="172.16.11.242:8991"
+thread=8
 # whether perform deduplicate step (true || false)
 dedup=true
 
@@ -51,7 +51,7 @@ ref="/data/ngs/database/soft_database/GATK_Resource_Bundle/hg19/ucsc.hg19.fasta"
 # sentieon provided three additional vcf file that can be used in Base Recalibration
 k1="/data/ngs/database/soft_database/GATK_Resource_Bundle/hg19/dbsnp_138.hg19.vcf.gz"
 k2="/data/ngs/database/soft_database/GATK_Resource_Bundle/hg19/Mills_and_1000G_gold_standard.indels.hg19.sites.vcf.gz"
-k3="/data/ngs/database/soft_database/GATK_Resource_Bundle/hg19/Mills_and_1000G_gold_standard.indels.hg19.sites.vcf.gz"
+k3="/data/ngs/database/soft_database/GATK_Resource_Bundle/hg19/1000G_phase1.indels.hg19.sites.vcf.gz"
 # dbSNP database
 dbsnp="/data/ngs/database/soft_database/GATK_Resource_Bundle/hg19/dbsnp_138.hg19.vcf.gz"
 # vep database
@@ -63,9 +63,8 @@ cache_version="98"
 do_trim="on"
 do_align="on"
 do_dedup="on"
-do_qc="on"
-do_realign="on"
 do_bqsr="on"
+do_qc="on"
 do_snp="on"
 do_anno="on"
 
@@ -140,7 +139,7 @@ echo "========================================================"
 
 if [[  $do_qc == "on"  ]]; then
 echo "sampleID,fastq_size,raw_reads,raw_bases,clean_reads,clean_bases,\
-qc30_rate,mapping_rate(%),on-target_percent(%),\
+q30_rate(%),mapping_rate(%),on-target_percent(%),\
 mean_depth,mean_dedup_depth,dup_rate(%),\
 average_insert_size,std_insert_size,\
 Uniformity_0.1X(%),Uniformity_0.2X(%),\
@@ -251,7 +250,7 @@ do
 
         normal_qc_rate=`python3 -c "import json; \
         fh = json.load(open('$trim_dir/${sampleID}.trim.json', 'r')); \
-        print(fh['summary']['before_filtering']['q30_rate'])"`
+        print(fh['summary']['before_filtering']['q30_rate']*100)"`
 
         normal_mapping_rate=$(grep "Fraction of Mapped Reads" $qc_dir/${sampleID}/coverage.report | awk -F"\t" '{print $2}');
         
@@ -286,35 +285,13 @@ do
         >> $qc_dir/QC_summary.csv
     fi
 
-    # step6 - indel re-alignment
-    if [[  $do_realign == "on"  ]];
-    then
-        echo "LOGGING: ${sampleID} -- `date --rfc-3339=seconds` -- indel-realignment";
-        if [ $dedup == true ]; then
-            ${sentieon} driver -t ${thread} -r ${ref} \
-            -i ${align_dir}/${sampleID}.sorted.dedup.bam \
-            --algo Realigner -k ${k1} -k ${k2} -k ${k3} \
-            ${align_dir}/${sampleID}.realigned.bam
-        else
-            ${sentieon} driver -t ${thread} -r ${ref} \
-            -i ${align_dir}/${sampleID}.sorted.bam \
-            --algo Realigner -k ${k1} -k ${k2} -k ${k3} \
-            ${align_dir}/${sampleID}.realigned.bam
-        fi
-    fi
-
     # step7 - BQSR
     if [[  $do_bqsr == "on"  ]];
     then
         echo "LOGGING: ${sampleID} -- `date --rfc-3339=seconds` -- BQSR";
         ${sentieon} driver -t ${thread} -r ${ref} \
-        -i ${align_dir}/${sampleID}.realigned.bam \
+        -i ${align_dir}/${sampleID}.sorted.dedup.bam \
         --algo QualCal -k ${k1} -k ${k2} -k ${k3} ${align_dir}/${sampleID}.recal.table;
-
-        ${sentieon} driver -t ${thread} -r ${ref} -i ${align_dir}/${sampleID}.realigned.bam \
-        -q ${align_dir}/${sampleID}.recal.table --algo QualCal -k ${k1} -k ${k2} -k ${k3} \
-        ${align_dir}/${sampleID}.recal.post.table \
-        --algo ReadWriter ${align_dir}/${sampleID}.recal.bam;
     fi
 
     # step8 - Haplotyper
@@ -323,8 +300,10 @@ do
         echo "LOGGING: ${sampleID} -- `date --rfc-3339=seconds` -- snp calling";
 
         ${sentieon} driver -r ${ref} -t ${thread} \
-        -i ${align_dir}/${sampleID}.recal.bam \
-        --algo Haplotyper --emit_conf=10 --call_conf=10 \
+        -i ${align_dir}/${sampleID}.sorted.dedup.bam \
+	    -q $align_dir/$sampleID.recal.table \
+        --algo Haplotyper \
+        --emit_conf=10 --call_conf=10 \
         -d ${dbsnp} \
         ${snp_dir}/${sampleID}.germline.raw.vcf;
 
